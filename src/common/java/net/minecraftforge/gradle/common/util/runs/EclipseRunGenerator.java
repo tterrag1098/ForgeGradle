@@ -20,24 +20,28 @@
 
 package net.minecraftforge.gradle.common.util.runs;
 
-import net.minecraftforge.gradle.common.util.RunConfig;
+import java.io.File;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+import java.util.stream.Stream;
+
+import javax.annotation.Nonnull;
+import javax.xml.parsers.DocumentBuilder;
+
 import org.gradle.api.Project;
 import org.gradle.api.plugins.JavaPluginConvention;
 import org.gradle.api.tasks.SourceSet;
+import org.gradle.api.tasks.SourceSetContainer;
 import org.gradle.plugins.ide.eclipse.model.EclipseModel;
 import org.gradle.plugins.ide.eclipse.model.SourceFolder;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 
-import javax.annotation.Nonnull;
-import javax.xml.parsers.DocumentBuilder;
-import java.io.File;
-import java.util.LinkedHashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.function.Function;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
+import net.minecraftforge.gradle.common.util.RunConfig;
 
 public class EclipseRunGenerator extends RunConfigGenerator.XMLConfigurationBuilder
 {
@@ -114,12 +118,53 @@ public class EclipseRunGenerator extends RunConfigGenerator.XMLConfigurationBuil
             return runConfig.getMods().stream()
                     .map(modConfig -> {
                         return (modConfig.getSources().isEmpty() ? Stream.of(main) : modConfig.getSources().stream())
-                                .map(SourceSet::getName)
-                                .filter(outputs::containsKey)
-                                .map(outputs::get)
+                                .map(ss -> EclipseRunGenerator.findOutput(project, ss))
+                                .filter(Optional::isPresent)
+                                .map(Optional::get)
                                 .map(output -> modConfig.getName() + "%%" + output)
                                 .map(s -> String.join(File.pathSeparator, s, s)); // <resources>:<classes>
                     }).flatMap(Function.identity());
         }
+    }
+    
+    static Optional<String> findOutput(@Nonnull final Project currentProject, @Nonnull final SourceSet sourceSet) {
+        final Project rootProject = currentProject.getRootProject();
+        final Project actualProject = getProjectFromSourceSet(rootProject, sourceSet);
+        if (actualProject != null) {
+            final EclipseModel eclipse = actualProject.getExtensions().findByType(EclipseModel.class);
+            return eclipse.getClasspath().resolveDependencies().stream()
+                .filter(SourceFolder.class::isInstance)
+                .map(SourceFolder.class::cast)
+                .map(SourceFolder::getOutput)
+                .distinct()
+                .filter(output -> output.split("/")[output.split("/").length - 1].equals(sourceSet.getName()))
+                .map(output -> actualProject.file(output).getAbsolutePath())
+                .findFirst();
+        }
+        return Optional.empty();
+    }
+
+    static Project getProjectFromSourceSet(final Project root, final SourceSet sourceSet) {
+        if (isSourceSetIn(root, sourceSet)) {
+            return root;
+        }
+        for (Project p : root.getSubprojects()) {
+            Project ret = getProjectFromSourceSet(p, sourceSet);
+            if (ret != null) {
+                return ret;
+            }
+        }
+        return null;
+    }
+
+    static boolean isSourceSetIn(@Nonnull final Project project, @Nonnull final SourceSet sourceSet) {
+        if (!project.getPluginManager().hasPlugin("java")) return false;
+        final SourceSetContainer sourceSets = project.getConvention().getPlugin(JavaPluginConvention.class).getSourceSets();
+        for (SourceSet set : sourceSets) {
+            if (set == sourceSet) {
+                return true;
+            }
+        }
+        return false;
     }
 }
